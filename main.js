@@ -66,13 +66,18 @@ async function queueRequest(path) {
   });
 }
 
-async function requestRemainingPages(pathWithLimitParam, offsetParam = '') {
+// Request remaining pages, optionally calling the observe method each time
+// a page is successfully fetched.
+async function requestRemainingPages(pathWithLimitParam, observePageData, offsetParam = '') {
   let resources = [];
   return queueRequest(`${pathWithLimitParam}${offsetParam}`)
     .then((response) => {
       resources = response.data.data;
+      if (observePageData) {
+        observePageData(resources);
+      }
       return response.data.hasNext
-        ? requestRemainingPages(pathWithLimitParam, `&offset=${response.data.next}`)
+        ? requestRemainingPages(pathWithLimitParam, observePageData, `&offset=${response.data.next}`)
         : [];
     })
     .then((remainingResources) => {
@@ -149,38 +154,36 @@ async function populateFullOpportunity(opportunity) {
     );
   }
 
-  return Promise.all(fetchPromises).then(() => {
-    addToStatsCompleted(1);
-    return fullOpportunity;
-  });
+  return Promise.all(fetchPromises).then(() => fullOpportunity);
 }
 
 async function main() {
   await exec(`mkdir -p ${ASSET_DIRECTORY}`);
-
-  const opportunities = [];
   progressBar.start(0, 0);
-  queueRequest(`/opportunities?limit=10&expand=applications&expand=stage&expand=owner&expand=sourcedBy&expand=contact&expand=followers`)
-    .then((response) => {
-      addToStatsTotal(response.data.data.length);
-      return Promise.all(
-        response.data.data.map(o => {
-          return populateFullOpportunity(o).then((full) => {
-            opportunities.push(full);
-          });
-        })
-      );
-    })
-    .then(() => {;
-      progressBar.stop();
-      fs.writeFileSync(
-        OUTPUT_JSON_FILE, 
-        JSON.stringify(opportunities, undefined, 2)
-      );
-      
-      // repl.start().context.opportunities = opportunities;
-      process.exit(0);
-    });
+  requestRemainingPages(
+    '/opportunities?expand=applications&expand=stage&expand=owner&expand=sourcedBy&expand=contact&expand=followers&limit=100',
+    (page) => {
+      addToStatsTotal(page.length);
+    }
+  ).then((partialOpportunities) => {
+    return Promise.all(
+      partialOpportunities.map(o => {
+        return populateFullOpportunity(o).then(o => {
+          addToStatsCompleted(1);
+          return o;
+        });
+      })
+    );
+  }).then((opportunities) => {
+    progressBar.stop();
+    fs.writeFileSync(
+      OUTPUT_JSON_FILE, 
+      JSON.stringify(opportunities, undefined, 2)
+    );
+    
+    // repl.start().context.opportunities = opportunities;
+    process.exit(0);
+  });
 
 
   // Start processing the request queue
