@@ -5,13 +5,29 @@ const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
 const cliProgress = require('cli-progress');
 const colors = require('ansi-colors');
 
-const apiKey = process.env.LEVER_API_KEY;
+// Lever occasionally throws rate limit errors despite our best efforts to
+// request at a threshold below their limiting. Add retries that also pause
+// request queue processing to give Lever a momentary break before resuming.
+axiosRetry(axios, {
+  retries: 5,
+  retryCondition: (error) => {
+    if (error?.response?.status === 429) {
+      pauseLaunchingRequests(5000);
+      console.log('Caught rate limiting error, retrying...');
+      return true;
+    }
+    return false;
+  },
+  retryDelay: (retryCount) => retryCount * retryCount * 1000,
+});
+
 
 const API_ROOT = 'https://api.lever.co/v1'
-const REQUEST_PER_SECOND = 10;
+const REQUEST_PER_SECOND = 10;  
 const DATA_DIRECTORY = path.join(__dirname, 'data');
 const ASSET_DIRECTORY = path.join(DATA_DIRECTORY, 'assetsByOpportunityId');
 const OUTPUT_JSON_FILE = path.join(DATA_DIRECTORY, 'lever-export.json');
@@ -36,6 +52,35 @@ function addToStatsCompleted(count) {
 }
 
 const launchQueue = [];
+let launchAllowed = true;
+let launchPauseTimeoutId;
+
+function startLaunchingRequests() {
+  // Start processing the request queue
+  setInterval(() => {
+    if (launchAllowed && launchQueue.length > 0) {
+      launchQueue.shift().start();
+    }
+    if (!launchAllowed) {
+      console.log('Request processing skipped');
+    }
+  }, 1000 / REQUEST_PER_SECOND);
+}
+
+function pauseLaunchingRequests(delayMs) {
+  console.log('Pausing request processing...');
+  launchAllowed = false;
+  // If the launch was already paused, then clear the prior delay so it doesn't
+  // interfere with this most recent one.
+  if (launchPauseTimeoutId) {
+    clearTimeout(launchPauseTimeoutId);
+  }
+  launchPauseTimeoutId = setTimeout(() => {
+    launchAllowed = true;
+    launchPauseTimeoutId = undefined;
+    console.log('Request processing resumes');
+  }, delayMs);
+}
 
 async function queueDownload({ url, opportunityId, fileName, isResume }) {
   return new Promise((resolve, reject) => {
@@ -61,7 +106,7 @@ async function queueRequest(path) {
   }).then(() => {;
     return axios.get(
       `https://api.lever.co/v1${path}`, 
-      { auth: { username: apiKey, password: '' }
+      { auth: { username: process.env.LEVER_API_KEY, password: '' }
     }).catch(error => console.log(error));;
   });
 }
@@ -160,6 +205,7 @@ async function populateFullOpportunity(opportunity) {
 async function main() {
   await exec(`mkdir -p ${ASSET_DIRECTORY}`);
   progressBar.start(0, 0);
+  
   requestRemainingPages(
     '/opportunities?expand=applications&expand=stage&expand=owner&expand=sourcedBy&expand=contact&expand=followers&limit=100',
     (page) => {
@@ -186,12 +232,7 @@ async function main() {
   });
 
 
-  // Start processing the request queue
-  setInterval(() => {
-    if (launchQueue.length > 0) {
-      launchQueue.shift().start();
-    }
-  }, 1000 / REQUEST_PER_SECOND);
+  startLaunchingRequests();
 }
 
 main();
