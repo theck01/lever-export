@@ -17,10 +17,9 @@ axiosRetry(axios, {
   retryCondition: (error) => {
     if (error?.response?.status === 429) {
       pauseLaunchingRequests(5000);
-      console.log('Caught rate limiting error, retrying...');
       return true;
     }
-    return false;
+    return axiosRetry.isNetworkOrIdempotentRequestError(error);
   },
   retryDelay: (retryCount) => retryCount * retryCount * 1000,
 });
@@ -29,7 +28,6 @@ axiosRetry(axios, {
 const API_ROOT = 'https://api.lever.co/v1'
 const REQUEST_PER_SECOND = 10;  
 const DATA_DIRECTORY = path.join(__dirname, 'data');
-const ASSET_DIRECTORY = path.join(DATA_DIRECTORY, 'assetsByOpportunityId');
 const OUTPUT_JSON_FILE = path.join(DATA_DIRECTORY, 'lever-export.json');
 
 const stats = {
@@ -61,14 +59,10 @@ function startLaunchingRequests() {
     if (launchAllowed && launchQueue.length > 0) {
       launchQueue.shift().start();
     }
-    if (!launchAllowed) {
-      console.log('Request processing skipped');
-    }
   }, 1000 / REQUEST_PER_SECOND);
 }
 
 function pauseLaunchingRequests(delayMs) {
-  console.log('Pausing request processing...');
   launchAllowed = false;
   // If the launch was already paused, then clear the prior delay so it doesn't
   // interfere with this most recent one.
@@ -78,24 +72,7 @@ function pauseLaunchingRequests(delayMs) {
   launchPauseTimeoutId = setTimeout(() => {
     launchAllowed = true;
     launchPauseTimeoutId = undefined;
-    console.log('Request processing resumes');
   }, delayMs);
-}
-
-async function queueDownload({ url, opportunityId, fileName, isResume }) {
-  return new Promise((resolve, reject) => {
-    launchQueue.push({
-      start: () => { resolve(); }
-    });
-  }).then(() => {
-    const downloadDirectory = path.join(
-      ASSET_DIRECTORY, 
-      opportunityId, 
-      isResume ? 'resumes' : 'files'
-    );
-    const outputFile = path.join(downloadDirectory, fileName);
-    return exec(`mkdir -p ${downloadDirectory} && curl -s -u $LEVER_API_KEY --pass '' ${url} --output "${outputFile}"`);
-  });
 }
 
 async function queueRequest(path) {
@@ -160,16 +137,6 @@ async function populateFullOpportunity(opportunity) {
     requestRemainingPages(`/opportunities/${opportunity.id}/resumes`)
       .then((resumes) => {
         fullOpportunity = { ...fullOpportunity, resumes };
-        /*
-        return Promise.all(
-          resumes.map(r => queueDownload({
-            url: r.file.downloadUrl,
-            opportunityId: opportunity.id,
-            fileName: r.file.name,
-            isResume: true
-          }))
-        );
-        */
       }),
   ];
 
@@ -203,7 +170,7 @@ async function populateFullOpportunity(opportunity) {
 }
 
 async function main() {
-  await exec(`mkdir -p ${ASSET_DIRECTORY}`);
+  await exec(`mkdir -p ${DATA_DIRECTORY}`);
   progressBar.start(0, 0);
   
   requestRemainingPages(
@@ -227,10 +194,8 @@ async function main() {
       JSON.stringify(opportunities, undefined, 2)
     );
     
-    // repl.start().context.opportunities = opportunities;
     process.exit(0);
   });
-
 
   startLaunchingRequests();
 }
