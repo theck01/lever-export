@@ -25,7 +25,7 @@ async function processDownload({ url, opportunityId, fileName, isResume }) {
     opportunityId, 
     isResume ? 'resumes' : 'files'
   );
-  const outputFile = path.join(downloadDirectory, fileName);
+  const outputFile = path.join(downloadDirectory, fileName.replace(/`/g, ''));
   return fs.existsSync(outputFile)
     ? Promise.resolve()
     : exec(`mkdir -p ${downloadDirectory} && curl -s -u "$LEVER_API_KEY:" ${url} --output "${outputFile}"`);
@@ -37,7 +37,7 @@ async function consumeDownloadQueue(queue) {
     ? processDownload(download).then(() => { 
       progressBar.increment(); 
       return consumeDownloadQueue(queue);
-    }) : Promise.resove();
+    }) : Promise.resolve();
 }
 
 async function main() {
