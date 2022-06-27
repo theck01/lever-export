@@ -4,9 +4,22 @@ const repl = require('repl');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 
+const cliProgress = require('cli-progress');
+const colors = require('ansi-colors');
+
 const DATA_DIRECTORY = path.join(__dirname, 'data');
 const EXPORTED_JSON_FILE = path.join(DATA_DIRECTORY, 'lever-export.json');
-const IMPORT_CSV_FILE = path.join(DATA_DIRECTORY, 'active-opportunity-import.csv');
+const IMPORT_CSV_FILE = path.join(DATA_DIRECTORY, 'candidates-for-greenhouse-import.csv');
+const RESUMES_TEMP_DIRECTORY = path.join(DATA_DIRECTORY, 'delete_after_resumes_zipped');
+const IMPORT_RESUMES_ZIP = path.join(DATA_DIRECTORY, 'resumes-for-greenhouse-import.zip');
+const ASSET_DIRECTORY = path.join(DATA_DIRECTORY, 'assetsByOpportunityId');
+
+const progressBar = new cliProgress.SingleBar({
+    format: 'Resume Zip Assembly |' + colors.cyan('{bar}') + '| {percentage}% || {value}/{total} files moved || {duration_formatted}, ETA: {eta_formatted}',
+    barCompleteChar: '\u2588',
+    barIncompleteChar: '\u2591',
+    hideCursor: true
+});
 
 function mapStageTextToMilestone(stageText) {
   switch(stageText) {
@@ -41,8 +54,6 @@ function transcribeNote(note, potentialAuthors) {
 }
 
 async function main() {
-  await exec(`mkdir -p ${DATA_DIRECTORY}`);
-
   const opportunities = JSON.parse(fs.readFileSync(EXPORTED_JSON_FILE));
 
   const knownDraftUsers = opportunities.reduce(
@@ -68,9 +79,11 @@ async function main() {
     { leads: [], active: [], archived: [] }
   );
 
-  const greenhouseCandidates = active.map((o) => ({
-    first: o.contact.name.split(/\s+/)[0],
-    last: o.contact.name.split(/\s+/).slice(1).join(' ') ?? '',
+  const sources = active;
+
+  const greenhouseCandidates = sources.map((o) => ({
+    first: o.contact.name.split(/\s+/)[0] ?? '(none)',
+    last: o.contact.name.split(/\s+/).slice(1).join(' ') ?? '(none)',
     company: o.contact.headline ?? '',
     notes: o.notes.map(n => transcribeNote(n, knownDraftUsers)).join(', ') ?? '',
     email: o.contact.emails.join(', ') ?? '',
@@ -81,11 +94,6 @@ async function main() {
     job: o.applications[0].posting.text ?? '',
     milestone: mapStageTextToMilestone(o.stage.text)
   }));
-
-  const byMilestoneStats = greenhouseCandidates.reduce((stats, c) => ({
-    ...stats,
-    [c.milestone]: (stats[c.milestone] ?? 0) + 1
-  }), {});
 
   const csvRows = greenhouseCandidates.map(c => {
     return [
@@ -118,8 +126,36 @@ async function main() {
   fs.writeFileSync(IMPORT_CSV_FILE, csvData);
 
   console.log(`Wrote candidates to ${IMPORT_CSV_FILE}`);
-  console.log(`Candidates by milestone:`);
-  console.log(JSON.stringify(byMilestoneStats, undefined, 2));
+
+  await exec(`mkdir -p ${RESUMES_TEMP_DIRECTORY}`);
+
+  console.log({
+    sources: sources.map(s => s.contact),
+  });
+
+  const fileMovements = sources.reduce((moves, o) => {
+    return moves.concat(o.resumes.map((r, resumeIndex) => ({
+      origin: path.join(ASSET_DIRECTORY, o.id, 'resumes', r.file.name),
+      destination: path.join(RESUMES_TEMP_DIRECTORY, `${o.contact.name}${resumeIndex > 0 ? ` ${resumeIndex}` : ''}${r.file.ext}`)
+    })));
+  }, []);
+
+  progressBar.start(fileMovements.length);
+  while (fileMovements.length > 0) {
+    const { origin, destination } = fileMovements.shift();
+    await exec(`cp "${origin}" "${destination}"`);
+    progressBar.increment();
+  }
+  progressBar.stop();
+  console.log(`Copied all resumes to ${RESUMES_TEMP_DIRECTORY}`);
+
+  await exec(`cd ${RESUMES_TEMP_DIRECTORY} && zip -r ${IMPORT_RESUMES_ZIP} .`);
+  console.log(`Aggregated resumes for active candidates in ${IMPORT_RESUMES_ZIP}`);
+
+  await exec(`rm -rf ${RESUMES_TEMP_DIRECTORY}`);
+
+  process.exit(0);
 }
+  
 
 main();
