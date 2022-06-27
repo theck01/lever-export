@@ -60,3 +60,17 @@ associated with the opportuntiy are saved to the `files` subdirectory.
 ```
 $ node download-assets.js
 ```
+
+## translate-to-greenhouse.js
+
+Generates a tab-separated CSV file with Greenhouse candidate information from
+all active applications found in `data/lever-export.json`. This script requires
+running `export.js` first, or moving an existing export to the correct location.
+
+CSV is saved to `data/active-opportunity-import.csv`.
+
+### Usage
+
+```
+$ node translate-to-greenhouse.js
+```
