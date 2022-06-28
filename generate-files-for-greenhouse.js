@@ -9,17 +9,12 @@ const colors = require('ansi-colors');
 
 const DATA_DIRECTORY = path.join(__dirname, 'data');
 const EXPORTED_JSON_FILE = path.join(DATA_DIRECTORY, 'lever-export.json');
-const IMPORT_CSV_FILE = path.join(DATA_DIRECTORY, 'candidates-for-greenhouse-import.csv');
+const CANDIDATE_CSV_FILE = path.join(DATA_DIRECTORY, 'candidates-for-greenhouse-import.csv');
+const PROSPECT_CSV_FILE = path.join(DATA_DIRECTORY, 'prospects-for-greenhouse-import.csv');
 const RESUMES_TEMP_DIRECTORY = path.join(DATA_DIRECTORY, 'delete_after_resumes_zipped');
-const IMPORT_RESUMES_ZIP = path.join(DATA_DIRECTORY, 'resumes-for-greenhouse-import.zip');
+const CANDIDATE_RESUMES_ZIP = path.join(DATA_DIRECTORY, 'candidate-resumes-for-greenhouse-import.zip');
+const PROSPECT_RESUMES_ZIP = path.join(DATA_DIRECTORY, 'prospect-resumes-for-greenhouse-import.zip');
 const ASSET_DIRECTORY = path.join(DATA_DIRECTORY, 'assetsByOpportunityId');
-
-const progressBar = new cliProgress.SingleBar({
-    format: 'Resume Zip Assembly |' + colors.cyan('{bar}') + '| {percentage}% || {value}/{total} files moved || {duration_formatted}, ETA: {eta_formatted}',
-    barCompleteChar: '\u2588',
-    barIncompleteChar: '\u2591',
-    hideCursor: true
-});
 
 function mapStageTextToMilestone(stageText) {
   switch(stageText) {
@@ -53,6 +48,37 @@ function transcribeNote(note, potentialAuthors) {
   return `${noteText}\n --${noteAuthor}`;
 }
 
+async function zipResumesForOpportunities(opportunities, zipPath, progressTitle) {
+  await exec(`mkdir -p ${RESUMES_TEMP_DIRECTORY}`);
+
+  const fileMoves = opportunities.reduce((moves, o) => {
+    return moves.concat(o.resumes.map((r, resumeIndex) => ({
+      origin: path.join(ASSET_DIRECTORY, o.id, 'resumes', r.file.name),
+      destination: path.join(RESUMES_TEMP_DIRECTORY, `${o.contact.name}${resumeIndex > 0 ? ` ${resumeIndex}` : ''}${r.file.ext}`)
+    })));
+  }, []);
+
+  const progressBar = new cliProgress.SingleBar({
+      format: `${progressTitle} |` + colors.cyan('{bar}') + '| {percentage}% || {value}/{total} files moved || {duration_formatted}, ETA: {eta_formatted}',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true
+  });
+
+  progressBar.start(fileMoves.length);
+  while (fileMoves.length > 0) {
+    const { origin, destination } = fileMoves.shift();
+    await exec(`cp "${origin}" "${destination}"`);
+    progressBar.increment();
+  }
+  progressBar.stop();
+
+  await exec(`cd ${RESUMES_TEMP_DIRECTORY} && zip -r ${zipPath} .`);
+  console.log(`Aggregated resumes for active candidates in ${zipPath}`);
+
+  await exec(`rm -rf ${RESUMES_TEMP_DIRECTORY}`);
+}
+
 async function main() {
   const opportunities = JSON.parse(fs.readFileSync(EXPORTED_JSON_FILE));
 
@@ -79,23 +105,26 @@ async function main() {
     { leads: [], active: [], archived: [] }
   );
 
-  const sources = active;
+  // CANDIDATES DATA GENERATION
 
-  const greenhouseCandidates = sources.map((o) => ({
-    first: o.contact.name.split(/\s+/)[0] ?? '(none)',
-    last: o.contact.name.split(/\s+/).slice(1).join(' ') ?? '(none)',
-    company: o.contact.headline ?? '',
+  const greenhouseCandidates = active.map((o) => ({
+    first: o.contact.name.trim().split(/\s+/)[0] || '(none specified)',
+    last: o.contact.name.trim().split(/\s+/).slice(1).join(' ').replace(/^\s+$/, '') || '(none specified)',
+    company: o.contact.headline || '(none specified)',
     notes: o.notes.map(n => transcribeNote(n, knownDraftUsers)).join(', ') ?? '',
-    email: o.contact.emails.join(', ') ?? '',
+    // All instances of multiple emails were observed to be duplicates of the
+    // first email. Greenhouse only accepts one email, so just eliminate
+    // duplicates.
+    email: o.contact.emails[0] ?? '',
     phone: o.contact.phones.map(p => `${p.type}:${p.value}`).join(', ') ?? '',
     socialMedia: o.links.join(', ') ?? '',
     address: o.contact.location?.name ?? '',
     source: o.sources.join(', ') ?? '',
-    job: o.applications[0].posting.text ?? '',
+    job: o.applications[0].posting.text,
     milestone: mapStageTextToMilestone(o.stage.text)
   }));
 
-  const csvRows = greenhouseCandidates.map(c => {
+  const candidateCsvRows = greenhouseCandidates.map(c => {
     return [
       c.first, 
       c.last, 
@@ -112,47 +141,69 @@ async function main() {
       c.job,
       c.milestone
     ].map(field => {
-      if (field === null || field === undefined) {
-        console.log(c);
-      }
       return sanitizeForCsv(field);
     }).join('\t');
   });
-  const csvData = [
+  const candidateCsvData = [
     'First Name\tLast Name\tCompany\tTitle\tNotes\tEmail\tPhone\tSocial Media\tWebsite\tAddress\tSource\tWho gets credit\tJob\tMilestone',
-    ...csvRows
+    ...candidateCsvRows
   ].join('\n');
 
-  fs.writeFileSync(IMPORT_CSV_FILE, csvData);
+  fs.writeFileSync(CANDIDATE_CSV_FILE, candidateCsvData);
+  console.log(`Wrote candidates to ${CANDIDATE_CSV_FILE}`);
 
-  console.log(`Wrote candidates to ${IMPORT_CSV_FILE}`);
 
-  await exec(`mkdir -p ${RESUMES_TEMP_DIRECTORY}`);
+  // PROSPECTS DATA GENERATION
 
-  console.log({
-    sources: sources.map(s => s.contact),
+  const greenhouseProspects = leads
+    .filter((o) => !!o.contact.name.trim())
+    .map((o) => ({
+      first: o.contact.name.trim().split(/\s+/)[0] || '(none specified)',
+      last: o.contact.name.trim().split(/\s+/).slice(1).join(' ').replace(/^\s+$/, '') || '(none specified)',
+      company: o.contact.headline || '(none specified)',
+      notes: o.notes.map(n => transcribeNote(n, knownDraftUsers)).join(', ') ?? '',
+      // All instances of multiple emails were observed to be duplicates of the
+      // first email. Greenhouse only accepts one email, so just eliminate
+      // duplicates.
+      email: o.contact.emails[0] ?? '',
+      phone: o.contact.phones.map(p => `${p.type}:${p.value}`).join(', ') ?? '',
+      socialMedia: o.links.join(', ') ?? '',
+      address: o.contact.location?.name ?? '',
+      source: o.sources.join(', ') ?? '',
+    }));
+
+  const prospectCsvRows = greenhouseProspects.map(p => {
+    return [
+      p.first, 
+      p.last, 
+      p.company, 
+      '' /* title */, 
+      p.notes,
+      p.email, 
+      p.phone, 
+      p.socialMedia, 
+      '' /* website */,
+      p.address, 
+      p.source, 
+      '' /* who gets credit */, 
+      '' /* job */,
+      '' /* department */,
+      '' /* pool */,
+      '' /* prospect stage */
+    ].map(field => {
+      return sanitizeForCsv(field);
+    }).join('\t');
   });
+  const prospectCsvData = [
+    'First Name\tLast Name\tCompany\tTitle\tNotes\tEmail\tPhone\tSocial Media\tWebsite\tAddress\tSource\tWho gets credit\tJob\tDepartment\tPool\tProspect Stage',
+    ...prospectCsvRows
+  ].join('\n');
 
-  const fileMovements = sources.reduce((moves, o) => {
-    return moves.concat(o.resumes.map((r, resumeIndex) => ({
-      origin: path.join(ASSET_DIRECTORY, o.id, 'resumes', r.file.name),
-      destination: path.join(RESUMES_TEMP_DIRECTORY, `${o.contact.name}${resumeIndex > 0 ? ` ${resumeIndex}` : ''}${r.file.ext}`)
-    })));
-  }, []);
+  fs.writeFileSync(PROSPECT_CSV_FILE, prospectCsvData);
+  console.log(`Wrote prospects to ${PROSPECT_CSV_FILE}`);
 
-  progressBar.start(fileMovements.length);
-  while (fileMovements.length > 0) {
-    const { origin, destination } = fileMovements.shift();
-    await exec(`cp "${origin}" "${destination}"`);
-    progressBar.increment();
-  }
-  progressBar.stop();
-  console.log(`Copied all resumes to ${RESUMES_TEMP_DIRECTORY}`);
-
-  await exec(`cd ${RESUMES_TEMP_DIRECTORY} && zip -r ${IMPORT_RESUMES_ZIP} .`);
-  console.log(`Aggregated resumes for active candidates in ${IMPORT_RESUMES_ZIP}`);
-
-  await exec(`rm -rf ${RESUMES_TEMP_DIRECTORY}`);
+  await zipResumesForOpportunities(active, CANDIDATE_RESUMES_ZIP, 'Candidate Resume Zip'); 
+  await zipResumesForOpportunities(leads, PROSPECT_RESUMES_ZIP, 'Prospect Resume Zip'); 
 
   process.exit(0);
 }

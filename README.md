@@ -63,15 +63,24 @@ $ node download-assets.js
 
 ## generate-files-for-greenhouse.js
 
-Generates a tab-separated CSV file with Greenhouse candidate information from
-all active applications found in `data/lever-export.json`. This script requires
-running `export.js` first, or moving an existing export to the correct location.
+Generates a tab-separated CSV file with active candidate information found in
+`data/lever-export.json`, and a ZIP file with all resumes of active candidates.
 
+Also Generates a tab-separated CSV file with prospect information found in
+`data/lever-export.json`, and a ZIP file with all resumes of prospects.
+
+Generates files:
+
+| File | Contains |
+| --- | --- |
+| `data/candidates-for-greenhouse-import.csv` | Tab separated CSV file containing active applications in a format for Greenhouse candidate bulk import. |
+| `data/candidate-resumes-for-greenhouse-import.zip` | Zip file of all resumes for active candidates for Greenhouse candidate bulk import. |
+| `data/prospects-for-greenhouse-import.csv` | Tab separated CSV file containing leads in a format for Greenhouse prospect bulk import. |
+| `data/prospect-resumes-for-greenhouse-import.zip` | Zip file of all resumes for leads for Greenhouse prospect bulk import. |
+
+This script requires running `export.js` and `download-assets.js` first.
 Also generates a ZIP file containing all candidate resumes for Greenhouse
 upload. Requires that `download-assets.js` script be run.
-
-CSV is saved to `data/candidates-for-greenhouse-import.csv`.
-Resume zip is saved to `data/resumes-for-greenhouse-import.zip`.
 
 ### Usage
 
